@@ -114,7 +114,7 @@ class FrontappMCPServer {
             properties: {
               conversation_id: { type: 'string', description: 'Conversation ID' },
               assignee_id: { type: 'string', description: 'Teammate ID to assign' },
-              status: { type: 'string', enum: ['archived', 'deleted', 'open'], description: 'Conversation status' },
+              status: { type: 'string', enum: ['archived', 'deleted', 'unassigned', 'assigned'], description: 'Conversation status' },
               tag_ids: { type: 'array', items: { type: 'string' }, description: 'Array of tag IDs' },
             },
             required: ['conversation_id'],
@@ -489,10 +489,10 @@ class FrontappMCPServer {
           inputSchema: {
             type: 'object',
             properties: {
-              source_contact_id: { type: 'string', description: 'Contact ID to merge from (will be deleted)' },
               target_contact_id: { type: 'string', description: 'Contact ID to merge into (will be kept)' },
+              contact_ids: { type: 'array', items: { type: 'string' }, description: 'Array of contact IDs to merge into target' },
             },
-            required: ['source_contact_id', 'target_contact_id'],
+            required: ['target_contact_id', 'contact_ids'],
           },
         },
         {
@@ -1257,12 +1257,11 @@ class FrontappMCPServer {
           inputSchema: {
             type: 'object',
             properties: {
-              channel_id: { type: 'string', description: 'Channel ID' },
               conversation_id: { type: 'string', description: 'Conversation ID' },
               author_id: { type: 'string', description: 'Teammate ID' },
               body: { type: 'string', description: 'Draft body' },
             },
-            required: ['channel_id', 'author_id', 'body'],
+            required: ['conversation_id', 'author_id', 'body'],
           },
         },
         {
@@ -1435,7 +1434,7 @@ class FrontappMCPServer {
           inputSchema: {
             type: 'object',
             properties: {
-              channel_id: { type: 'string', description: 'Channel ID' },
+              inbox_id: { type: 'string', description: 'Inbox ID' },
               sender: { type: 'object', description: 'Sender information' },
               to: { type: 'array', items: { type: 'string' }, description: 'Recipients' },
               body: { type: 'string', description: 'Message body' },
@@ -1443,7 +1442,7 @@ class FrontappMCPServer {
               created_at: { type: 'number', description: 'Unix timestamp of original message' },
               metadata: { type: 'object', description: 'Message metadata' },
             },
-            required: ['channel_id', 'sender', 'to', 'body', 'created_at'],
+            required: ['inbox_id', 'sender', 'to', 'body', 'created_at'],
           },
         },
         {
@@ -2431,8 +2430,9 @@ class FrontappMCPServer {
   }
 
   private async searchConversations(query: string, limit?: number) {
-    const response = await this.axiosInstance.get('/conversations/search', {
-      params: { q: query, limit },
+    const encodedQuery = encodeURIComponent(query);
+    const response = await this.axiosInstance.get(`/conversations/search/${encodedQuery}`, {
+      params: { limit },
     });
     return response.data;
   }
@@ -2546,8 +2546,31 @@ class FrontappMCPServer {
 
   // Analytics methods
   private async getAnalytics(params: any) {
-    const response = await this.axiosInstance.get('/analytics', { params });
-    return response.data;
+    const { start, end, metrics, filters } = params;
+    // Step 1: Create the analytics report
+    const createResponse = await this.axiosInstance.post('/analytics/reports', {
+      start,
+      end,
+      metrics,
+      filters,
+    });
+    const reportUid = createResponse.data._links?.self?.match(/reports\/(.+)/)?.[1]
+      || createResponse.data.report_uid;
+    if (!reportUid) {
+      return createResponse.data;
+    }
+    // Step 2: Poll for the report result (max 10 attempts)
+    for (let i = 0; i < 10; i++) {
+      const reportResponse = await this.axiosInstance.get(`/analytics/reports/${reportUid}`);
+      if (reportResponse.data.status === 'done' || reportResponse.data.metrics) {
+        return reportResponse.data;
+      }
+      if (reportResponse.data.status === 'failed') {
+        return { error: 'Analytics report failed', details: reportResponse.data };
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    return { error: 'Analytics report timed out after 10 seconds' };
   }
 
   // Account methods
@@ -2602,10 +2625,10 @@ class FrontappMCPServer {
   }
 
   private async mergeContacts(params: any) {
-    const { source_contact_id, target_contact_id } = params;
+    const { target_contact_id, contact_ids } = params;
     const response = await this.axiosInstance.post('/contacts/merge', {
-      source_contact_id,
       target_contact_id,
+      contact_ids,
     });
     return response.data;
   }
@@ -2994,8 +3017,8 @@ class FrontappMCPServer {
   }
 
   private async createDraftReply(params: any) {
-    const { channel_id, ...data } = params;
-    const response = await this.axiosInstance.post(`/channels/${channel_id}/drafts`, data);
+    const { conversation_id, ...data } = params;
+    const response = await this.axiosInstance.post(`/conversations/${conversation_id}/drafts`, data);
     return response.data;
   }
 
@@ -3042,19 +3065,19 @@ class FrontappMCPServer {
   }
 
   private async listInboxAccess(inboxId: string) {
-    const response = await this.axiosInstance.get(`/inboxes/${inboxId}/access`);
+    const response = await this.axiosInstance.get(`/inboxes/${inboxId}/teammates`);
     return response.data;
   }
 
   private async addInboxAccess(params: any) {
     const { inbox_id, teammate_ids } = params;
-    const response = await this.axiosInstance.post(`/inboxes/${inbox_id}/access`, { teammate_ids });
+    const response = await this.axiosInstance.post(`/inboxes/${inbox_id}/teammates`, { teammate_ids });
     return response.data;
   }
 
   private async removeInboxAccess(params: any) {
     const { inbox_id, teammate_ids } = params;
-    const response = await this.axiosInstance.delete(`/inboxes/${inbox_id}/access`, {
+    const response = await this.axiosInstance.delete(`/inboxes/${inbox_id}/teammates`, {
       data: { teammate_ids },
     });
     return response.data;
@@ -3079,8 +3102,8 @@ class FrontappMCPServer {
   }
 
   private async importMessage(params: any) {
-    const { channel_id, ...data } = params;
-    const response = await this.axiosInstance.post(`/channels/${channel_id}/import`, data);
+    const { inbox_id, ...data } = params;
+    const response = await this.axiosInstance.post(`/inboxes/${inbox_id}/imported_messages`, data);
     return response.data;
   }
 
