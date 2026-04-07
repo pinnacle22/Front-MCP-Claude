@@ -26,7 +26,7 @@ import axios, { AxiosInstance } from 'axios';
 const API_BASE_URL = 'https://api2.frontapp.com';
 
 class FrontappMCPServer {
-  private server: Server;
+  public server: Server;
   private axiosInstance: AxiosInstance;
 
   constructor(apiToken: string) {
@@ -3309,7 +3309,7 @@ const transport = new StreamableHTTPServerTransport({
 });
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
-mcpServer['server'].connect(transport).then(() => {
+mcpServer.server.connect(transport).then(() => {
   console.log('MCP server connected to transport');
 }).catch((err: Error) => {
   console.error('Failed to connect MCP server:', err);
