@@ -13,7 +13,8 @@
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -3292,20 +3293,48 @@ class FrontappMCPServer {
     return response.data;
   }
 
-  async run(): Promise<void> {
-    const transport = new StdioServerTransport();
+async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    let body: unknown = undefined;
+    if (req.method === 'POST') {
+      body = await new Promise((resolve, reject) => {
+        let data = '';
+        req.on('data', chunk => { data += chunk; });
+        req.on('end', () => {
+          try { resolve(JSON.parse(data)); } catch { resolve(undefined); }
+        });
+        req.on('error', reject);
+      });
+    }
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     await this.server.connect(transport);
-    console.error('Frontapp MCP server running on stdio');
+    await transport.handleRequest(req, res, body);
   }
 }
 
-// Main execution
-const apiToken = process.env.FRONTAPP_API_TOKEN;
+const apiToken = process.env.FRONT_API_TOKEN || process.env.FRONTAPP_API_TOKEN;
+if (!apiToken) { console.error('Error: FRONT_API_TOKEN is required'); process.exit(1); }
 
-if (!apiToken) {
-  console.error('Error: FRONTAPP_API_TOKEN environment variable is required');
-  process.exit(1);
-}
+const mcpServer = new FrontappMCPServer(apiToken);
+const PORT = parseInt(process.env.PORT || '3000', 10);
 
-const server = new FrontappMCPServer(apiToken);
-server.run().catch(console.error);
+const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+  if (req.url === '/health' || req.url === '/') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', service: 'frontapp-mcp-server' }));
+    return;
+  }
+  if (req.url === '/mcp' || req.url?.startsWith('/mcp?')) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
+    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+    await mcpServer.handleRequest(req, res);
+    return;
+  }
+  res.writeHead(404);
+  res.end(JSON.stringify({ error: 'Not found' }));
+});
+
+httpServer.listen(PORT, () => {
+  console.log(`Frontapp MCP server running on port ${PORT}`);
+});
