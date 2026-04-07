@@ -3303,19 +3303,7 @@ if (!apiToken) {
   process.exit(1);
 }
 
-const mcpServer = new FrontappMCPServer(apiToken);
-const transport = new StreamableHTTPServerTransport({
-  sessionIdGenerator: undefined,
-});
 const PORT = parseInt(process.env.PORT || '3000', 10);
-
-mcpServer.server.connect(transport).then(() => {
-  console.log('MCP server connected to transport');
-}).catch((err: Error) => {
-  console.error('Failed to connect MCP server:', err);
-  process.exit(1);
-});
-
 const BASE_URL = `https://front-mcp-claude.onrender.com`;
 
 const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -3352,6 +3340,11 @@ const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse
   }
 
   if (url === '/mcp' || url.startsWith('/mcp?')) {
+    // Fresh server + transport per request — required for stateless MCP
+    const mcpServer = new FrontappMCPServer(apiToken);
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    await mcpServer.server.connect(transport);
+
     let body: unknown = undefined;
     if (req.method === 'POST') {
       body = await new Promise((resolve, reject) => {
@@ -3362,6 +3355,7 @@ const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse
       });
     }
     await transport.handleRequest(req, res, body);
+    transport.close();
     return;
   }
 
