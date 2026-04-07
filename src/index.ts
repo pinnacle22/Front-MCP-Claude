@@ -3316,31 +3316,51 @@ mcpServer.server.connect(transport).then(() => {
   process.exit(1);
 });
 
+const BASE_URL = `https://front-mcp-claude.onrender.com`;
+
 const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-  if (req.url === '/health' || req.url === '/') {
+  const url = req.url || '/';
+
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
+
+  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+
+  if (url === '/health' || url === '/') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', service: 'frontapp-mcp-server' }));
     return;
   }
 
-  if (req.url === '/mcp' || req.url?.startsWith('/mcp?')) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
-    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+  if (url === '/.well-known/oauth-protected-resource' || url === '/.well-known/oauth-protected-resource/mcp') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ resource: BASE_URL, authorization_servers: [], bearer_methods_supported: [], scopes_supported: [] }));
+    return;
+  }
 
+  if (url === '/.well-known/oauth-authorization-server') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ issuer: BASE_URL, authorization_endpoint: `${BASE_URL}/authorize`, token_endpoint: `${BASE_URL}/token`, response_types_supported: ['code'], grant_types_supported: ['authorization_code'] }));
+    return;
+  }
+
+  if (url === '/register') {
+    res.writeHead(201, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ client_id: 'frontapp-mcp-public', client_secret_expires_at: 0 }));
+    return;
+  }
+
+  if (url === '/mcp' || url.startsWith('/mcp?')) {
     let body: unknown = undefined;
     if (req.method === 'POST') {
       body = await new Promise((resolve, reject) => {
         let data = '';
         req.on('data', (chunk: Buffer) => { data += chunk; });
-        req.on('end', () => {
-          try { resolve(JSON.parse(data)); } catch { resolve(undefined); }
-        });
+        req.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve(undefined); } });
         req.on('error', reject);
       });
     }
-
     await transport.handleRequest(req, res, body);
     return;
   }
